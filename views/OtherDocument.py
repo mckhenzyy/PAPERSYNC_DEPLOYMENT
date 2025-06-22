@@ -301,7 +301,8 @@ class OtherDocumentApp:
             btn = getattr(self.window, name)
             btn.setIcon(QIcon(resource_path("asset/icons", icon)))
 
-        # --- Attachment Handling ---
+
+    # --- Attachment Handling ---
     def open_file(self, path):
         try:
             if platform.system() == "Windows":
@@ -313,23 +314,200 @@ class OtherDocumentApp:
         except Exception as e:
             return str(e)
         return None
-
+    
+        # --- Attachment Handling ---
+    def open_file(self, path):
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                subprocess.call(["open", path])
+            else:
+                subprocess.call(["xdg-open", path])
+        except Exception as e:
+            return str(e)
+        return None
 
     def handle_attach_file(self, window, inputField):
-        files, _ = QFileDialog.getOpenFileNames(window, "Select Files", "", "All Files (*)")
-        if files:
+        try:
+            files, _ = QFileDialog.getOpenFileNames(window, "Select Files", "", "All Files (*)")
+            if not files:
+                return
+    
+            print(f"[DEBUG] Selected files: {files}")
+            print(f"[DEBUG] Uploading to: {self.UPLOADS_DIR}")
+    
             os.makedirs(self.UPLOADS_DIR, exist_ok=True)
+    
             current_files = inputField.toolTip().strip().split(";") if inputField.toolTip() else []
             new_files = []
+    
             for file_path in files:
-                filename = os.path.basename(file_path)
-                dest_path = os.path.join(self.UPLOADS_DIR, filename)
-                if not os.path.exists(dest_path):
-                    shutil.copy(file_path, dest_path)
-                new_files.append(filename)  # Only store filename, since we know the root is UPLOADS_DIR
-            all_files = list(dict.fromkeys(current_files + new_files))  # Remove duplicates
-            inputField.setText("\n".join(os.path.basename(f) for f in all_files))
-            inputField.setToolTip(";".join(all_files))
+                try:
+                    filename = os.path.basename(file_path)
+                    dest_path = os.path.join(self.UPLOADS_DIR, filename)
+    
+                    print(f"[DEBUG] Copying {file_path} to {dest_path}")
+                    shutil.copy2(file_path, dest_path)
+    
+                    if os.path.exists(dest_path):
+                        new_files.append(dest_path)  # store full path
+                        print(f"[DEBUG] Successfully copied {filename}")
+                    else:
+                        print(f"[ERROR] Failed to copy file: {filename}")
+                        QMessageBox.warning(window, "Error", f"Failed to copy file: {filename}")
+                except Exception as e:
+                    print(f"[ERROR] {filename}: {e}")
+                    QMessageBox.warning(window, "Error", f"Error copying {filename}:\n{str(e)}")
+    
+            if new_files:
+                all_files = list(dict.fromkeys(current_files + new_files))  # remove duplicates
+                display_names = [os.path.basename(f) for f in all_files]
+                inputField.setText(", ".join(display_names))
+                inputField.setToolTip(";".join(all_files))  # store full paths
+                print(f"[DEBUG] Updated attachment list: {all_files}")
+        except Exception as e:
+            print(f"[ERROR] Unexpected: {e}")
+            QMessageBox.critical(window, "Error", f"Unexpected error:\n{str(e)}")
+            
+    def open_attachments(self, window, inputField):
+        filenames = inputField.toolTip().strip()
+        if not filenames:
+            QMessageBox.information(window, "No Attachments", "No files to open.")
+            return
+    
+        file_paths = filenames.split(";")
+        display_names = [os.path.basename(p) for p in file_paths]
+    
+        selected_file, ok = QInputDialog.getItem(
+            window, "Open Attachment", "Select a file to open:", display_names, editable=False
+        )
+    
+        if ok and selected_file:
+            index = display_names.index(selected_file)
+            full_path = file_paths[index]
+    
+            print(f"[DEBUG] Trying to open file: {full_path}")
+            if os.path.exists(full_path):
+                error = self.open_file(full_path)
+                if error:
+                    QMessageBox.warning(window, "Error", f"Cannot open file:\n{error}")
+            else:
+                QMessageBox.warning(window, "Not Found", f"File not found:\n{full_path}")
+
+    def verify_attachments(self, filenames_str):
+        if not filenames_str or not filenames_str.strip():
+            return True
+    
+        print(f"[DEBUG] Verifying attachment paths")
+        missing_files = []
+        existing_files = []
+    
+        for full_path in filenames_str.split(";"):
+            full_path = full_path.strip()
+            if not full_path:
+                continue
+    
+            if os.path.exists(full_path):
+                existing_files.append(full_path)
+            else:
+                missing_files.append(full_path)
+    
+        if missing_files:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText("Missing Files")
+            msg.setInformativeText(
+                "The following files could not be found:\n" +
+                "\n".join(missing_files) +
+                "\n\nPlease reattach or verify the shared folder is accessible."
+            )
+            msg.setWindowTitle("Missing Files")
+            msg.exec()
+            return False
+    
+        return True
+    
+    def check_uploads_dir(self):
+        """Verify the uploads directory is accessible"""
+        try:
+            # First check if path exists
+            if not os.path.exists(self.UPLOADS_DIR):
+                return False
+                
+            # Try to create a test file
+            test_file = os.path.join(self.UPLOADS_DIR, "test.tmp")
+            try:
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                return True
+            except Exception as e:
+                print(f"Error accessing uploads directory: {str(e)}")
+                return False
+        except Exception as e:
+            print(f"Error checking uploads directory: {str(e)}")
+            return False
+
+    def check_uploads_dir_with_retry(self, retries=3, delay=2):
+        """Check uploads directory with retries"""
+        import time
+        for attempt in range(retries):
+            if self.check_uploads_dir():
+                return True
+            if attempt < retries - 1:
+                time.sleep(delay)
+        return False
+
+    def check_network_share(self):
+        """Check if network share is available and accessible"""
+        if not self.UPLOADS_DIR.startswith(r"\\"):
+            return True  # Not a network path
+            
+        print(f"[DEBUG] Checking network share: {self.UPLOADS_DIR}")
+        
+        try:
+            # First check if path exists
+            if not os.path.exists(self.UPLOADS_DIR):
+                print(f"[DEBUG] Network path does not exist")
+                return False
+                
+            # Try to list contents
+            try:
+                files = os.listdir(self.UPLOADS_DIR)
+                print(f"[DEBUG] Network share accessible. Contains {len(files)} items")
+                return True
+            except Exception as e:
+                print(f"[ERROR] Could not access network share: {str(e)}")
+                return False
+                
+        except Exception as e:
+            print(f"[ERROR] Network share check failed: {str(e)}")
+            return False
+    
+    def remove_attachment(self, window, inputField):
+        paths = inputField.toolTip().strip()
+        if not paths:
+            QMessageBox.information(window, "No Attachments", "No files to remove.")
+            return
+
+        rel_paths = paths.split(";")
+        display_names = [os.path.basename(p) for p in rel_paths]
+
+        selected_file, ok = QInputDialog.getItem(
+            window,
+            "Remove Attachment",
+            "Select a file to remove:",
+            display_names,
+            editable=False
+        )
+
+        if ok and selected_file:
+            index = display_names.index(selected_file)
+            rel_paths.pop(index)
+
+            inputField.setText(", ".join(os.path.basename(f) for f in rel_paths))
+            inputField.setToolTip(";".join(rel_paths))
 
     def open_attachments(self, window, inputField):
         paths = inputField.toolTip().strip()
